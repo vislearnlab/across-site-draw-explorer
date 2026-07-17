@@ -1,0 +1,9 @@
+auth.txt
+.env
+__pycache__/
+*.pyc
+.DS_Store
+tmp_*
+# build intermediate — regenerate with dump_stores.py (needs docarray venv + .docs stores)
+stores.npz
+docenv/
