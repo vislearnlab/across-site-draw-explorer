@@ -59,7 +59,7 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
 .card{background:var(--surface);border:1px solid var(--ring);border-radius:12px}
 .plot-card{position:relative;overflow:hidden}
 #scatter{display:block;width:100%;height:640px;border-radius:12px;touch-action:none}
-#multiples{display:none;grid-template-columns:1fr 1fr;gap:2px;height:640px;padding:2px}
+#multiples{display:none;grid-template-columns:1fr 1fr;grid-auto-rows:1fr;gap:2px;height:640px;padding:2px}
 #multiples .mp{position:relative;background:var(--surface);border-radius:8px;overflow:hidden}
 #multiples .mp canvas{display:block;width:100%;height:100%}
 #multiples .mp .lab{position:absolute;left:9px;top:7px;font-size:12px;font-weight:600;
@@ -154,13 +154,15 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
       <span class="tlabel">Layout</span>
       <div class="seg" id="layout">
         <button data-l="unified" class="on">Unified map</button>
-        <button data-l="site">By site (category × site)</button>
+        <button data-l="site">By site</button>
+        <button data-l="age">By age</button>
       </div>
     </div>
     <div class="tgroup">
       <span class="tlabel">Color by</span>
       <div class="seg" id="colorby">
         <button data-m="site" class="on">Site</button>
+        <button data-m="siteage">Site × age</button>
         <button data-m="cat">Category</button>
         <button data-m="age">Age</button>
         <button data-m="recog">Recognizability</button>
@@ -243,12 +245,20 @@ const DATA_URL="points.json", STROKE_URL="strokes.json";
 let D=null, STR={}, P=null;
 const state={layout:"unified", color:"site", marks:"dots", centroids:false, sites:new Set([0,1,2,3]),
   cats:new Set([0,1,2,3,4,5,6,7,8,9,10,11]), ageMin:4, ageMax:9, recogOnly:false, pinned:null};
-// lazy thumbnail cache for "Drawings" marks
+// lazy thumbnail cache for "Drawings" marks (transparent PNGs, tinted on the fly)
 const IMG={}; let imgRedrawQueued=false;
 function getImg(id){let im=IMG[id];if(im!==undefined)return im;IMG[id]=null;
   const o=new Image();o.onload=()=>{IMG[id]=o;if(!imgRedrawQueued){imgRedrawQueued=true;
     requestAnimationFrame(()=>{imgRedrawQueued=false;redraw();});}};
   o.src=D.draw_dir+"/"+id+".png";return null;}
+// tint a transparent drawing to a color (ink alpha preserved) — cached per (id,color)
+const TINT={};
+function tintedImg(id,color){const im=getImg(id);if(!im)return null;
+  const e=TINT[id];if(e&&e.color===color)return e.canvas;
+  const c=document.createElement('canvas');c.width=im.width;c.height=im.height;
+  const g=c.getContext('2d');g.drawImage(im,0,0);
+  g.globalCompositeOperation='source-in';g.fillStyle=color;g.fillRect(0,0,c.width,c.height);
+  TINT[id]={color,canvas:c};return c;}
 const cssv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let SITE_COLORS=[];
 function readColors(){SITE_COLORS=[cssv('--s0'),cssv('--s1'),cssv('--s2'),cssv('--s3')];}
@@ -264,6 +274,14 @@ function lerpHex(a,b,t){const pa=[1,3,5].map(i=>parseInt(a.slice(i,i+2),16));
 function viridis(t){t=Math.max(0,Math.min(1,t));const x=t*(VIRIDIS.length-1);
   const i=Math.floor(x);return lerpHex(VIRIDIS[i],VIRIDIS[Math.min(i+1,VIRIDIS.length-1)],x-i);}
 function viridisCSS(){return `linear-gradient(90deg,${VIRIDIS.join(',')})`;}
+function hexToHSL(hex){let r=parseInt(hex.slice(1,3),16)/255,g=parseInt(hex.slice(3,5),16)/255,b=parseInt(hex.slice(5,7),16)/255;
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b);let h=0,s=0,l=(mx+mn)/2;
+  if(mx!==mn){const d=mx-mn;s=l>0.5?d/(2-mx-mn):d/(mx+mn);
+    h=mx===r?(g-b)/d+(g<b?6:0):mx===g?(b-r)/d+2:(r-g)/d+4;h*=60;}
+  return [Math.round(h),Math.round(s*100),Math.round(l*100)];}
+// site×age: site hue, saturation scaled by age (young = muted, old = full)
+function siteAgeColor(site,age){const [h,s,l]=hexToHSL(SITE_COLORS[site]);
+  const t=(age-4)/5;return `hsl(${h},${Math.round((0.28+0.72*t)*s)}%,${l}%)`;}
 
 Promise.all([fetch(DATA_URL).then(r=>r.json()),
              fetch(STROKE_URL).then(r=>r.ok?r.json():{}).catch(()=>({}))])
@@ -288,7 +306,7 @@ function init(){
   for(let i=0;i<P.n;i++){const v=P.target_sim[i];if(v<recogMin)recogMin=v;if(v>recogMax)recogMax=v;}
   document.getElementById('cbargrad').style.background=viridisCSS();
   buildChips(); bindToolbar(); applyURL(); buildLegend(); layoutScatter(); drawRDMs(); drawDivergence();
-  if(state.layout==='site'){setLayout('site');} redraw(); drawRecog();
+  if(state.layout!=='unified')setLayout(state.layout); redraw(); drawRecog();
   window.addEventListener('resize',()=>{layoutScatter();layoutMultiples();redraw();drawRecog();});
 }
 
@@ -319,6 +337,9 @@ function buildLegend(){
   const L=document.getElementById('legend');
   if(state.color==='site'){L.className='legend';L.innerHTML=D.sites.map((s,i)=>
     `<div class="row"><span class="sw" style="background:${SITE_COLORS[i]}"></span><b>${s}</b></div>`).join('');}
+  else if(state.color==='siteage'){L.className='legend';
+    L.innerHTML=`<div class="row"><b>Site</b> <span style="color:var(--muted)">× age 4→9</span></div>`
+      +D.sites.map((s,i)=>`<div class="row"><span class="ramp" style="width:44px;background:linear-gradient(90deg,${siteAgeColor(i,4)},${siteAgeColor(i,9)})"></span>${s}</div>`).join('');}
   else if(state.color==='cat'){L.className='legend';L.innerHTML=
     `<div class="legendgrid">`+D.categories.map((c,i)=>
     `<div class="row"><span class="sw" style="background:${CAT_COLORS[i]}"></span>${c}</div>`).join('')+`</div>`;}
@@ -330,6 +351,7 @@ function buildLegend(){
 }
 function colorOf(i){
   if(state.color==='site')return SITE_COLORS[P.site[i]];
+  if(state.color==='siteage')return siteAgeColor(P.site[i],P.age[i]);
   if(state.color==='cat')return CAT_COLORS[P.cat[i]];
   if(state.color==='age')return viridis((P.age[i]-4)/5);
   return viridis((P.target_sim[i]-recogMin)/(recogMax-recogMin+1e-9));
@@ -337,10 +359,10 @@ function colorOf(i){
 function visible(i){return state.sites.has(P.site[i])&&state.cats.has(P.cat[i])
   &&P.age[i]>=state.ageMin&&P.age[i]<=state.ageMax&&(!state.recogOnly||P.recog[i]===1);}
 
-// draw one drawing thumbnail as a mark (falls back to a colored dot until it loads)
-function drawMark(g,i,x,y,sz){const im=getImg(P.id[i]);const h=sz/2;
-  if(im){g.fillStyle='#fff';g.fillRect(x-h,y-h,sz,sz);g.drawImage(im,x-h,y-h,sz,sz);
-    g.strokeStyle=colorOf(i);g.lineWidth=1.4;g.strokeRect(x-h,y-h,sz,sz);}
+// draw one drawing as a mark: transparent, tinted to its color, so marks overlap
+// without occluding each other. Falls back to a colored dot until the PNG loads.
+function drawMark(g,i,x,y,sz){const c=tintedImg(P.id[i],colorOf(i));const h=sz/2;
+  if(c){g.drawImage(c,x-h,y-h,sz,sz);}
   else{g.fillStyle=colorOf(i);g.beginPath();g.arc(x,y,sz*0.16,0,6.283);g.fill();}}
 
 // labeled category centroids (mean of visible points in the given projection)
@@ -370,7 +392,7 @@ function layoutScatter(){
 function txp(i){const wx=P.x[i]*base.s+base.tx, wy=P.y[i]*base.s+base.ty;
   return [wx*view.s+view.tx, wy*view.s+view.ty];}
 function redraw(){
-  if(state.layout==='site'){redrawMultiples();updateFooter();return;}
+  if(state.layout!=='unified'){redrawMultiples();updateFooter();return;}
   ctx.setTransform(DPR,0,0,DPR,0,0);ctx.clearRect(0,0,VW,VH);
   const r=Math.max(1.6,2.6*Math.sqrt(view.s));
   ctx.globalAlpha=0.06;ctx.fillStyle=cssv('--muted');
@@ -411,47 +433,58 @@ cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientR
   const ns=Math.max(1,Math.min(40,view.s*f));const k=ns/view.s;
   view.tx=px-(px-view.tx)*k;view.ty=py-(py-view.ty)*k;view.s=ns;redraw();hideTip();},{passive:false});
 
-// ---------- per-site small multiples ----------
-let MP=[];   // {canvas,ctx,site,W,H,base,idxs}
+// ---------- small multiples (by site OR by age) ----------
+let MP=[];   // {canvas,ctx,label,color,key,inPanel(i),cx(i),cy(i),base,W,H}
+function currentGroups(){
+  if(state.layout==='age'){
+    return [4,5,6,7,8,9].map(a=>({key:a,label:'age '+a,color:viridis((a-4)/5),
+      inPanel:i=>P.age[i]===a, cx:i=>P.xa[i], cy:i=>P.ya[i]}));
+  }
+  return D.sites.map((s,si)=>({key:si,label:s,color:SITE_COLORS[si],
+    inPanel:i=>P.site[i]===si, cx:i=>P.xs[i], cy:i=>P.ys[i]}));
+}
 function buildMultiples(){
   const host=document.getElementById('multiples');host.innerHTML='';MP=[];
-  D.sites.forEach((site,si)=>{
+  const groups=currentGroups();
+  host.style.gridTemplateColumns=groups.length>4?'1fr 1fr 1fr':'1fr 1fr';
+  groups.forEach((grp,gi)=>{
     const mp=document.createElement('div');mp.className='mp';
-    mp.innerHTML=`<div class="lab"><span class="sw" style="background:${SITE_COLORS[si]}"></span>${site}</div>
-                  <div class="n" id="mpn${si}"></div>`;
+    mp.innerHTML=`<div class="lab"><span class="sw" style="background:${grp.color}"></span>${grp.label}</div>
+                  <div class="n"></div>`;
     const c=document.createElement('canvas');mp.appendChild(c);host.appendChild(mp);
-    MP.push({canvas:c,ctx:c.getContext('2d'),site,si,base:null});
+    const m={canvas:c,ctx:c.getContext('2d'),grp,nEl:mp.querySelector('.n'),base:null};
+    MP.push(m);
     c.addEventListener('mousemove',e=>{const r=c.getBoundingClientRect();
-      const i=nearestMP(si,e.clientX-r.left,e.clientY-r.top);
+      const i=nearestMP(m,e.clientX-r.left,e.clientY-r.top);
       if(i<0){hideTip();c.style.cursor='default';return;}c.style.cursor='pointer';showTip(i,e.clientX,e.clientY);});
     c.addEventListener('mouseleave',hideTip);
     c.addEventListener('click',e=>{const r=c.getBoundingClientRect();
-      const i=nearestMP(si,e.clientX-r.left,e.clientY-r.top);if(i>=0)pinPoint(i);});
+      const i=nearestMP(m,e.clientX-r.left,e.clientY-r.top);if(i>=0)pinPoint(i);});
   });
   layoutMultiples();
+  requestAnimationFrame(()=>{layoutMultiples();if(state.layout!=='unified')redrawMultiples();});
 }
 function layoutMultiples(){
   if(!MP.length)return;DPR=window.devicePixelRatio||1;
   MP.forEach(m=>{const r=m.canvas.getBoundingClientRect();
     m.W=r.width;m.H=r.height;m.canvas.width=r.width*DPR;m.canvas.height=r.height*DPR;
-    const pad=26,span=1000;const s=Math.min((r.width-2*pad)/span,(r.height-2*pad)/span);
+    const pad=24,span=1000;const s=Math.min((r.width-2*pad)/span,(r.height-2*pad)/span);
     m.base={s,tx:(r.width-span*s)/2,ty:(r.height-span*s)/2};});
 }
-function mpxy(m,i){return [P.xs[i]*m.base.s+m.base.tx, P.ys[i]*m.base.s+m.base.ty];}
-function nearestMP(si,px,py){const m=MP[si];if(!m||!m.base)return -1;let best=-1,bd=169;
-  for(let i=0;i<P.n;i++){if(P.site[i]!==si||!visible(i))continue;const [x,y]=mpxy(m,i);
+function mpxy(m,i){return [m.grp.cx(i)*m.base.s+m.base.tx, m.grp.cy(i)*m.base.s+m.base.ty];}
+function nearestMP(m,px,py){if(!m||!m.base)return -1;let best=-1,bd=169;
+  for(let i=0;i<P.n;i++){if(!m.grp.inPanel(i)||!visible(i))continue;const [x,y]=mpxy(m,i);
     const d=(x-px)**2+(y-py)**2;if(d<bd){bd=d;best=i;}}return best;}
 function redrawMultiples(){
   MP.forEach(m=>{const g=m.ctx;g.setTransform(DPR,0,0,DPR,0,0);g.clearRect(0,0,m.W,m.H);
-    let n=0;const dr=state.marks==='draw';const sz=18;
-    for(let i=0;i<P.n;i++){if(P.site[i]!==m.si)continue;const vis=visible(i);
-      const [x,y]=mpxy(m,i);
+    let n=0;const dr=state.marks==='draw';const sz=MP.length>4?15:18;
+    for(let i=0;i<P.n;i++){if(!m.grp.inPanel(i))continue;const vis=visible(i);const [x,y]=mpxy(m,i);
       if(!vis){g.globalAlpha=0.06;g.fillStyle=cssv('--muted');g.beginPath();g.arc(x,y,1.3,0,6.283);g.fill();g.globalAlpha=1;continue;}
-      n++;if(dr){drawMark(g,i,x,y,sz);}else{g.fillStyle=colorOf(i);g.beginPath();g.arc(x,y,2.4,0,6.283);g.fill();}}
-    if(state.centroids)drawCentroids(g,i=>mpxy(m,i),i=>P.site[i]===m.si);
-    if(state.pinned!=null&&P.site[state.pinned]===m.si){const [x,y]=mpxy(m,state.pinned);
+      n++;if(dr){drawMark(g,i,x,y,sz);}else{g.fillStyle=colorOf(i);g.beginPath();g.arc(x,y,2.2,0,6.283);g.fill();}}
+    if(state.centroids)drawCentroids(g,i=>mpxy(m,i),m.grp.inPanel);
+    if(state.pinned!=null&&m.grp.inPanel(state.pinned)){const [x,y]=mpxy(m,state.pinned);
       g.strokeStyle=cssv('--ink');g.lineWidth=2;g.beginPath();g.arc(x,y,6,0,6.283);g.stroke();}
-    const el=document.getElementById('mpn'+m.si);if(el)el.textContent=n+' shown';});
+    if(m.nEl)m.nEl.textContent=n+' shown';});
 }
 
 // ---------- tooltip / pin / replay ----------
@@ -520,9 +553,13 @@ function updateFooter(){
 }
 
 // ---------- RDMs (full width, labeled, viridis) ----------
+// Paper Fig 1C axis order — a clustered (not alphabetical) order that surfaces the
+// block structure: vehicles, animals, then nature/household. (rdm_analysis.ipynb)
+const RDM_ORDER=["airplane","bike","car","bird","cat","rabbit","tree","house","chair","cup","hat","watch"];
 function drawRDMs(){
   const host=document.getElementById('rdms');host.innerHTML='';
-  const cats=[...state.cats].sort((a,b)=>a-b);const N=cats.length;
+  const order=RDM_ORDER.map(c=>D.categories.indexOf(c)).filter(i=>i>=0);
+  const cats=order.filter(i=>state.cats.has(i));const N=cats.length;
   if(N===0){host.innerHTML='<div class="cap">Select at least one category.</div>';return;}
   // shared max across sites+selected cats (off-diagonal) so the color scale is comparable
   let mx=1e-9;D.sites.forEach(s=>cats.forEach(a=>cats.forEach(b=>{if(a!==b)mx=Math.max(mx,D.rdms[s][a][b]);})));
@@ -607,17 +644,16 @@ function setLayout(l){
   document.getElementById('multiples').style.display=uni?'none':'grid';
   document.getElementById('hint').textContent=uni
     ? 'hover = drawing · click = pin · scroll = zoom · drag = pan'
-    : 'each panel = one site\'s own t-SNE · color by category to see shared structure';
-  document.getElementById('legend').classList.toggle('hide', !uni && state.color==='site');
-  if(!uni){
-    if(state.color==='site'){setColor('cat');}   // site is constant within a panel
-    if(!MP.length)buildMultiples();else layoutMultiples();
-  }
+    : (l==='age'
+        ? 'each panel = one age\'s own t-SNE · color by site or category to see shared structure'
+        : 'each panel = one site\'s own t-SNE · color by category to see shared structure');
+  if(l==='site'&&state.color==='site')setColor('cat');   // site is constant within a site-panel
+  document.getElementById('legend').classList.remove('hide');
+  if(!uni)buildMultiples();                               // rebuild (grouping may have changed)
   redraw();
 }
 function setColor(m){state.color=m;
   document.querySelectorAll('#colorby button').forEach(x=>x.classList.toggle('on',x.dataset.m===m));
-  document.getElementById('legend').classList.toggle('hide', state.layout==='site'&&m==='site');
   buildLegend();redraw();}
 function bindToolbar(){
   document.querySelectorAll('#layout button').forEach(b=>b.onclick=()=>{

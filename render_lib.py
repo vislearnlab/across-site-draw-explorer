@@ -181,11 +181,14 @@ def _fit(polylines, size, pad):
     return [[tf(p) for p in pl] for pl in polylines], s
 
 
-def render_png(strokes, size=400, line_width=None, pad=None, supersample=2):
-    """Rasterise a list of stroke SVG strings to a size×size RGB PNG (bytes).
+def render_png(strokes, size=400, line_width=None, pad=None, supersample=2,
+               transparent=True):
+    """Rasterise a list of stroke SVG strings to a size×size PNG (bytes).
 
-    Round caps/joins via a dot at every vertex plus thick segments; supersampled
-    then downsampled for smooth edges. Returns PNG bytes, or None if nothing to draw."""
+    By default the background is transparent and the ink is black — so drawings can
+    be tinted to any color and overlap without occluding one another. Round caps/joins
+    via a dot at every vertex plus thick segments; supersampled then downsampled for
+    smooth edges. Returns PNG bytes, or None if nothing to draw."""
     polylines = []
     for s in strokes:
         polylines.extend(parse_path(s))
@@ -198,17 +201,21 @@ def render_png(strokes, size=400, line_width=None, pad=None, supersample=2):
     fitted, _ = _fit(polylines, S, pad * supersample)
     if fitted is None:
         return None
-    img = Image.new("RGB", (S, S), (255, 255, 255))
+    if transparent:
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    else:
+        img = Image.new("RGB", (S, S), (255, 255, 255))
     dr = ImageDraw.Draw(img)
+    ink = (0, 0, 0, 255) if transparent else (0, 0, 0)
     r = lw / 2.0
     for pl in fitted:
         if len(pl) == 1:
             x, y = pl[0]
-            dr.ellipse([x - r, y - r, x + r, y + r], fill=(0, 0, 0))
+            dr.ellipse([x - r, y - r, x + r, y + r], fill=ink)
             continue
-        dr.line(pl, fill=(0, 0, 0), width=int(round(lw)), joint="curve")
+        dr.line(pl, fill=ink, width=int(round(lw)), joint="curve")
         for (x, y) in pl:                     # round caps at every vertex
-            dr.ellipse([x - r, y - r, x + r, y + r], fill=(0, 0, 0))
+            dr.ellipse([x - r, y - r, x + r, y + r], fill=ink)
     img = img.resize((size, size), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)

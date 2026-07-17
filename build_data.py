@@ -41,7 +41,7 @@ import base64
 
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageOps
 
 import render_lib as R
 
@@ -154,14 +154,19 @@ def render_row(row, dev, ind_sess, ind_pid):
         src = os.path.join(KISUMU_DIR, os.path.basename(row.url))
         if not os.path.exists(src):
             return None, None
-        im = Image.open(src).convert("RGB")
-        # pad to square on white, then resize -> uniform thumbnail
+        # scanned black-on-white -> transparent PNG (ink alpha = darkness), so it
+        # tints/overlaps like the re-rendered vector drawings.
+        im = Image.open(src).convert("L")
         w, h = im.size
         s = max(w, h)
-        bg = Image.new("RGB", (s, s), (255, 255, 255))
-        bg.paste(im, ((s - w) // 2, (s - h) // 2))
+        canvas = Image.new("L", (s, s), 255)
+        canvas.paste(im, ((s - w) // 2, (s - h) // 2))
+        canvas = canvas.resize((RENDER_SIZE, RENDER_SIZE), Image.LANCZOS)
+        alpha = ImageOps.invert(canvas)               # black ink -> opaque, white -> clear
+        rgba = Image.new("RGBA", (RENDER_SIZE, RENDER_SIZE), (0, 0, 0, 0))
+        rgba.putalpha(alpha)
         buf = io.BytesIO()
-        bg.resize((RENDER_SIZE, RENDER_SIZE), Image.LANCZOS).save(buf, "PNG", optimize=True)
+        rgba.save(buf, "PNG", optimize=True)
         return buf.getvalue(), None
     if not strokes:
         return None, None
@@ -187,17 +192,16 @@ def tsne_layout(X, label=""):
     return np.round(emb, 2)
 
 
-def per_site_layouts(emb, X):
-    """A separate within-site t-SNE per site; returns xs, ys aligned to emb rows
-    (each point positioned inside its own site's 0..1000 layout). Powers the
-    'category x site' small-multiples view of shared category structure."""
-    xs = np.zeros(len(emb)); ys = np.zeros(len(emb))
-    site_arr = emb.location.values
-    for site in SITES:
-        sel = np.where(site_arr == site)[0]
-        xy = tsne_layout(X[sel], label=f" [{site}]")
-        xs[sel] = xy[:, 0]; ys[sel] = xy[:, 1]
-    return np.round(xs, 2), np.round(ys, 2)
+def per_group_layouts(X, groups, name):
+    """A separate within-group t-SNE per group value; returns gx, gy aligned to the
+    rows (each point positioned inside its own group's 0..1000 layout)."""
+    gx = np.zeros(len(X)); gy = np.zeros(len(X))
+    for g, sel in groups:
+        if len(sel) < 5:
+            gx[sel] = 500; gy[sel] = 500; continue
+        xy = tsne_layout(X[sel], label=f" [{name} {g}]")
+        gx[sel] = xy[:, 0]; gy[sel] = xy[:, 1]
+    return np.round(gx, 2), np.round(gy, 2)
 
 
 def cosine_dist_matrix(means):
@@ -333,9 +337,12 @@ def main():
     xy = tsne_layout(X, label=" [all]")
     rec["x"] = xy[:, 0].tolist()
     rec["y"] = xy[:, 1].tolist()
-    xs, ys = per_site_layouts(kept, X)
-    rec["xs"] = xs.tolist()
-    rec["ys"] = ys.tolist()
+    site_arr = kept.location.values
+    xs, ys = per_group_layouts(X, [(s, np.where(site_arr == s)[0]) for s in SITES], "site")
+    rec["xs"] = xs.tolist(); rec["ys"] = ys.tolist()
+    age_arr = kept.age.values
+    xa, ya = per_group_layouts(X, [(a, np.where(age_arr == a)[0]) for a in range(4, 10)], "age")
+    rec["xa"] = xa.tolist(); rec["ya"] = ya.tolist()
     rec["n"] = len(kept)
 
     print("computing cross-site structure ...")
