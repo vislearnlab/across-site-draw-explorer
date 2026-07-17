@@ -48,9 +48,13 @@ import render_lib as R
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASD_REPO = os.environ.get("ASD_REPO", os.path.join(HERE, "..", "across-site-draw"))
 DEVPHOTO = os.environ.get("DEVPHOTODRAW", os.path.join(HERE, "..", "devphotodraw"))
+# Kisumu thumbnails are sourced from resized_drawings — the exact images CLIP
+# encoded for the paper (embedding_retrieval.ipynb feeds this dir to
+# generate_image_embeddings; the .docs urls point here). They are uniformly clean,
+# unlike transformed_drawings, whose pipeline corrupted 219 scans (see kisumu_qc.py).
 KISUMU_DIR = os.environ.get(
     "KISUMU_DIR",
-    "/Volumes/vislearnlab/experiments/drawing/data/kisumu/transformed_drawings")
+    "/Volumes/vislearnlab/experiments/drawing/data/kisumu/resized_drawings")
 STORES_NPZ = os.environ.get("STORES_NPZ", os.path.join(HERE, "stores.npz"))
 DRAW_DIR = os.path.join(HERE, "drawings")
 
@@ -137,6 +141,24 @@ def india_strokes():
     return by_sess, by_pid
 
 
+# --------------------------------------------------------------- kisumu (scans)
+def kisumu_transparent(src):
+    """Kisumu resized_drawings scan -> centred transparent RGBA (ink alpha=darkness).
+    resized_drawings is the exact image CLIP encoded for the paper, and is clean."""
+    if not os.path.exists(src):
+        return None
+    im = Image.open(src).convert("L")
+    w, h = im.size
+    s = max(w, h)
+    canvas = Image.new("L", (s, s), 255)
+    canvas.paste(im, ((s - w) // 2, (s - h) // 2))
+    canvas = canvas.resize((RENDER_SIZE, RENDER_SIZE), Image.LANCZOS)
+    alpha = np.asarray(ImageOps.invert(canvas), np.float32) / 255.0
+    rgba = np.zeros((RENDER_SIZE, RENDER_SIZE, 4), np.uint8)
+    rgba[:, :, 3] = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
+
+
 # ----------------------------------------------------------------- render a row
 def render_row(row, dev, ind_sess, ind_pid):
     """Return (png_bytes_or_None, svg_paths_or_None) for one emb_df row."""
@@ -151,22 +173,11 @@ def render_row(row, dev, ind_sess, ind_pid):
         if not strokes:
             strokes = ind_pid.get((pid.upper(), cat))
     if site == "Kisumu":
-        src = os.path.join(KISUMU_DIR, os.path.basename(row.url))
-        if not os.path.exists(src):
+        img = kisumu_transparent(os.path.join(KISUMU_DIR, os.path.basename(row.url)))
+        if img is None:
             return None, None
-        # scanned black-on-white -> transparent PNG (ink alpha = darkness), so it
-        # tints/overlaps like the re-rendered vector drawings.
-        im = Image.open(src).convert("L")
-        w, h = im.size
-        s = max(w, h)
-        canvas = Image.new("L", (s, s), 255)
-        canvas.paste(im, ((s - w) // 2, (s - h) // 2))
-        canvas = canvas.resize((RENDER_SIZE, RENDER_SIZE), Image.LANCZOS)
-        alpha = ImageOps.invert(canvas)               # black ink -> opaque, white -> clear
-        rgba = Image.new("RGBA", (RENDER_SIZE, RENDER_SIZE), (0, 0, 0, 0))
-        rgba.putalpha(alpha)
         buf = io.BytesIO()
-        rgba.save(buf, "PNG", optimize=True)
+        img.save(buf, "PNG", optimize=True)
         return buf.getvalue(), None
     if not strokes:
         return None, None
