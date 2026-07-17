@@ -169,13 +169,18 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
       </div>
     </div>
     <div class="tgroup">
-      <span class="tlabel">Show</span>
-      <div style="display:flex;gap:10px;align-items:center">
-        <div class="seg" id="marks">
-          <button data-k="dots" class="on">Dots</button>
-          <button data-k="draw">Drawings</button>
-        </div>
-        <label class="toggle"><input type="checkbox" id="centroids">Category centroids</label>
+      <span class="tlabel">Marks</span>
+      <div class="seg" id="marks">
+        <button data-k="dots" class="on">Dots</button>
+        <button data-k="draw">Drawings</button>
+      </div>
+    </div>
+    <div class="tgroup">
+      <span class="tlabel">Centroids</span>
+      <div class="seg" id="centroids">
+        <button data-c="off" class="on">Off</button>
+        <button data-c="cat">Category</button>
+        <button data-c="catsite">Cat × site</button>
       </div>
     </div>
     <div class="tgroup">
@@ -216,8 +221,9 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
       </div>
       <div class="card">
         <h3>Recognizability rises with age</h3>
-        <div class="cap">Mean CLIP target similarity by age, per site (recomputed from
-          the visible set).</div>
+        <div class="cap">Mean <b>CLIP</b> target similarity by age, per site (recomputed from
+          the visible set). This is the model-based measure — cosine similarity to the
+          target category's CLIP text embedding — <b>not</b> a behavioral 12-AFC score.</div>
         <svg id="recogchart"></svg>
       </div>
     </div>
@@ -243,7 +249,7 @@ h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
 <script>
 const DATA_URL="points.json", STROKE_URL="strokes.json";
 let D=null, STR={}, P=null;
-const state={layout:"unified", color:"site", marks:"dots", centroids:false, sites:new Set([0,1,2,3]),
+const state={layout:"unified", color:"site", marks:"dots", centroids:"off", sites:new Set([0,1,2,3]),
   cats:new Set([0,1,2,3,4,5,6,7,8,9,10,11]), ageMin:4, ageMax:9, recogOnly:false, pinned:null};
 // lazy thumbnail cache for "Drawings" marks (transparent PNGs, tinted on the fly)
 const IMG={}; let imgRedrawQueued=false;
@@ -293,13 +299,13 @@ function applyURL(){
   const q=new URLSearchParams(location.search);
   if(q.get('color'))state.color=q.get('color');
   if(q.get('marks'))state.marks=q.get('marks');
-  if(q.get('centroids')==='1')state.centroids=true;
+  if(q.get('centroids'))state.centroids=q.get('centroids')==='1'?'cat':q.get('centroids');
   if(q.get('layout'))state.layout=q.get('layout');
   // reflect in controls
   document.querySelectorAll('#colorby button').forEach(x=>x.classList.toggle('on',x.dataset.m===state.color));
   document.querySelectorAll('#marks button').forEach(x=>x.classList.toggle('on',x.dataset.k===state.marks));
   document.querySelectorAll('#layout button').forEach(x=>x.classList.toggle('on',x.dataset.l===state.layout));
-  document.getElementById('centroids').checked=state.centroids;
+  document.querySelectorAll('#centroids button').forEach(x=>x.classList.toggle('on',x.dataset.c===state.centroids));
 }
 function init(){
   readColors();
@@ -365,18 +371,37 @@ function drawMark(g,i,x,y,sz){const c=tintedImg(P.id[i],colorOf(i));const h=sz/2
   if(c){g.drawImage(c,x-h,y-h,sz,sz);}
   else{g.fillStyle=colorOf(i);g.beginPath();g.arc(x,y,sz*0.16,0,6.283);g.fill();}}
 
-// labeled category centroids (mean of visible points in the given projection)
-function drawCentroids(g,proj,inGroup){
+// labeled centroids. mode 'cat' = one per category (category-colored). mode 'catsite'
+// = one per (category, site), site-colored, with same-category site-centroids linked —
+// a spatial read of the cross-site divergence measured in the side panel.
+function drawCentroids(g,proj,inGroup,mode){
+  g.textAlign='center';g.textBaseline='middle';
+  if(mode==='catsite'){
+    const acc={};
+    for(let i=0;i<P.n;i++){if(!visible(i)||!inGroup(i))continue;const c=P.cat[i],s=P.site[i];const [x,y]=proj(i);
+      const a=(acc[c]=acc[c]||{});const o=(a[s]=a[s]||[0,0,0]);o[0]+=x;o[1]+=y;o[2]++;}
+    g.font='600 10px system-ui,sans-serif';
+    for(const c in acc){const pts=[];for(const s in acc[c]){const o=acc[c][s];pts.push([o[0]/o[2],o[1]/o[2],+s]);}
+      if(pts.length>1){g.strokeStyle=cssv('--muted');g.globalAlpha=0.4;g.lineWidth=1;g.beginPath();
+        for(let k=0;k<pts.length;k++)for(let j=k+1;j<pts.length;j++){g.moveTo(pts[k][0],pts[k][1]);g.lineTo(pts[j][0],pts[j][1]);}
+        g.stroke();g.globalAlpha=1;}
+      pts.forEach(p=>{g.fillStyle=SITE_COLORS[p[2]];g.strokeStyle=cssv('--surface');g.lineWidth=2;
+        g.beginPath();g.arc(p[0],p[1],5,0,6.283);g.stroke();g.fill();});
+      const gx=pts.reduce((a,p)=>a+p[0],0)/pts.length,gy=pts.reduce((a,p)=>a+p[1],0)/pts.length;
+      const name=D.categories[c],w=g.measureText(name).width+8;
+      g.fillStyle=cssv('--surface');g.globalAlpha=0.82;g.fillRect(gx-w/2,gy-7,w,14);g.globalAlpha=1;
+      g.fillStyle=cssv('--ink');g.fillText(name,gx,gy);}
+    g.textAlign='start';g.textBaseline='alphabetic';return;
+  }
   const sx={},sy={},cnt={};
   for(let i=0;i<P.n;i++){if(!visible(i)||!inGroup(i))continue;const c=P.cat[i];const [x,y]=proj(i);
     sx[c]=(sx[c]||0)+x;sy[c]=(sy[c]||0)+y;cnt[c]=(cnt[c]||0)+1;}
-  g.font='600 11px system-ui,sans-serif';g.textAlign='center';g.textBaseline='middle';
+  g.font='600 11px system-ui,sans-serif';
   for(const c in cnt){const x=sx[c]/cnt[c],y=sy[c]/cnt[c];const col=CAT_COLORS[c];const name=D.categories[c];
     g.fillStyle=col;g.strokeStyle=cssv('--surface');g.lineWidth=3;
     g.beginPath();g.arc(x,y,6,0,6.283);g.stroke();g.fill();
     const w=g.measureText(name).width+8;
-    g.fillStyle=cssv('--surface');g.globalAlpha=0.82;
-    g.fillRect(x-w/2,y+9,w,15);g.globalAlpha=1;
+    g.fillStyle=cssv('--surface');g.globalAlpha=0.82;g.fillRect(x-w/2,y+9,w,15);g.globalAlpha=1;
     g.fillStyle=cssv('--ink');g.fillText(name,x,y+16.5);}
   g.textAlign='start';g.textBaseline='alphabetic';}
 
@@ -405,7 +430,7 @@ function redraw(){
   else{for(let i=0;i<P.n;i++){if(!visible(i))continue;const [x,y]=txp(i);
       if(x<-5||x>VW+5||y<-5||y>VH+5)continue;
       ctx.fillStyle=colorOf(i);ctx.beginPath();ctx.arc(x,y,r,0,6.283);ctx.fill();}}
-  if(state.centroids)drawCentroids(ctx,txp,i=>true);
+  if(state.centroids!=='off')drawCentroids(ctx,txp,i=>true,state.centroids);
   if(state.pinned!=null&&P.site[state.pinned]!=null){const [x,y]=txp(state.pinned);
     ctx.strokeStyle=cssv('--ink');ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,r+4,0,6.283);ctx.stroke();}
   updateFooter();
@@ -481,7 +506,7 @@ function redrawMultiples(){
     for(let i=0;i<P.n;i++){if(!m.grp.inPanel(i))continue;const vis=visible(i);const [x,y]=mpxy(m,i);
       if(!vis){g.globalAlpha=0.06;g.fillStyle=cssv('--muted');g.beginPath();g.arc(x,y,1.3,0,6.283);g.fill();g.globalAlpha=1;continue;}
       n++;if(dr){drawMark(g,i,x,y,sz);}else{g.fillStyle=colorOf(i);g.beginPath();g.arc(x,y,2.2,0,6.283);g.fill();}}
-    if(state.centroids)drawCentroids(g,i=>mpxy(m,i),m.grp.inPanel);
+    if(state.centroids!=='off')drawCentroids(g,i=>mpxy(m,i),m.grp.inPanel,state.centroids);
     if(state.pinned!=null&&m.grp.inPanel(state.pinned)){const [x,y]=mpxy(m,state.pinned);
       g.strokeStyle=cssv('--ink');g.lineWidth=2;g.beginPath();g.arc(x,y,6,0,6.283);g.stroke();}
     if(m.nEl)m.nEl.textContent=n+' shown';});
@@ -663,7 +688,9 @@ function bindToolbar(){
   document.querySelectorAll('#marks button').forEach(b=>b.onclick=()=>{
     document.querySelectorAll('#marks button').forEach(x=>x.classList.remove('on'));
     b.classList.add('on');state.marks=b.dataset.k;redraw();});
-  document.getElementById('centroids').onchange=e=>{state.centroids=e.target.checked;redraw();};
+  document.querySelectorAll('#centroids button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#centroids button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');state.centroids=b.dataset.c;redraw();});
   const amin=document.getElementById('ageMin'),amax=document.getElementById('ageMax');
   const upd=()=>{let lo=+amin.value,hi=+amax.value;if(lo>hi)[lo,hi]=[hi,lo];
     state.ageMin=lo;state.ageMax=hi;document.getElementById('ageLo').textContent=lo;
